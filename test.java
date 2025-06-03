@@ -24,15 +24,14 @@ public class BasePathPrependFilter implements GlobalFilter, Ordered {
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String originalPath = exchange.getRequest().getURI().getPath();
 
-        return discoveryClient.getServices()
-            .flatMapMany(serviceIds -> Flux.fromIterable(serviceIds)) // OK: Mono<List<String>> → Flux<String>
-            .flatMap(discoveryClient::getInstances) // Flux<ServiceInstance>
+        return Flux.defer(() -> discoveryClient.getServices()
+            .flatMapMany(Flux::fromIterable)
+            .flatMap(discoveryClient::getInstances)
             .filter(serviceInstance -> {
                 String serviceId = serviceInstance.getServiceId().toLowerCase();
                 return originalPath.startsWith("/" + serviceId);
             })
             .next()
-            .defaultIfEmpty(null)
             .flatMap(serviceInstance -> {
                 if (serviceInstance == null) {
                     log.info("No matching service found for path: {}", originalPath);
@@ -56,7 +55,8 @@ public class BasePathPrependFilter implements GlobalFilter, Ordered {
                         .build();
 
                 return chain.filter(exchange.mutate().request(mutatedRequest).build());
-            });
+            })
+        );
     }
 
     @Override
