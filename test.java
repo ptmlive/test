@@ -1,30 +1,7 @@
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.cloud.client.discovery.ReactiveDiscoveryClient;
-import org.springframework.cloud.client.ServiceInstance;
-import org.springframework.core.Ordered;
-import org.springframework.http.server.reactive.ServerHttpRequest;
-import org.springframework.stereotype.Component;
-import org.springframework.web.server.ServerWebExchange;
-import org.springframework.cloud.gateway.filter.GlobalFilter;
-import org.springframework.cloud.gateway.filter.GatewayFilterChain;
-import reactor.core.publisher.Mono;
-
-import java.net.URI;
-
-@Slf4j
-@Component
-@RequiredArgsConstructor
-public class BasePathPrependFilter implements GlobalFilter, Ordered {
-
-    private final ReactiveDiscoveryClient discoveryClient;
-
-    @Override
-    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        String originalPath = exchange.getRequest().getURI().getPath();
-
-        return discoveryClient.getServices()
-            .flatMapMany(discoveryClient::getInstances)
+return discoveryClient.getServices()
+    .flatMap(serviceNames ->
+        Flux.fromIterable(serviceNames)
+            .flatMap(discoveryClient::getInstances)
             .filter(inst -> {
                 String serviceId = inst.getServiceId().toLowerCase();
                 return originalPath.startsWith("/" + serviceId);
@@ -44,7 +21,6 @@ public class BasePathPrependFilter implements GlobalFilter, Ordered {
                     return chain.filter(exchange);
                 }
 
-                // Rewrite path
                 String servicePrefix = "/" + serviceInstance.getServiceId().toLowerCase();
                 String adjustedPath = originalPath.replaceFirst(servicePrefix, basePath);
 
@@ -54,11 +30,5 @@ public class BasePathPrependFilter implements GlobalFilter, Ordered {
                         .path(adjustedPath)
                         .build();
                 return chain.filter(exchange.mutate().request(mutatedRequest).build());
-            });
-    }
-
-    @Override
-    public int getOrder() {
-        return -1; // ensure it runs before routing
-    }
-}
+            })
+    );
