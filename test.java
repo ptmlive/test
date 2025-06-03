@@ -1,3 +1,4 @@
+package com.example.gateway.filters;
 
 import com.example.gateway.config.AuthorizationConfiguration;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -46,6 +47,7 @@ public class AddUserHeaderAndParamFilter implements GlobalFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         if (!HttpMethod.POST.equals(exchange.getRequest().getMethod())) {
+            log.debug("AddUserHeaderAndParamFilter: request is not POST – skipping");
             return chain.filter(exchange);
         }
 
@@ -58,11 +60,13 @@ public class AddUserHeaderAndParamFilter implements GlobalFilter, Ordered {
             .map(jwt -> jwt.getClaimAsString("employeeId"))
             .flatMap(userId -> {
                 if (!StringUtils.hasText(userId)) {
+                    log.debug("AddUserHeaderAndParamFilter: employeeId claim is empty – skipping");
                     return chain.filter(exchange);
                 }
 
                 Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
                 if (route == null) {
+                    log.debug("AddUserHeaderAndParamFilter: no route found – skipping");
                     return chain.filter(exchange);
                 }
                 String serviceId = route.getUri().getHost();
@@ -85,7 +89,8 @@ public class AddUserHeaderAndParamFilter implements GlobalFilter, Ordered {
                             .build(true)
                             .toUri();
                     } catch (Exception e) {
-                        log.warn("Could not build URI with user param, forwarding without query param", e);
+                        log.warn("AddUserHeaderAndParamFilter: failed to build URI with user param – forwarding without query param", e);
+                        log.debug("AddUserHeaderAndParamFilter: forwarding requestWithHeaders without query param for service '{}', userId={}", serviceId, userId);
                         return chain.filter(exchange.mutate().request(requestWithHeaders).build());
                     }
 
@@ -93,7 +98,8 @@ public class AddUserHeaderAndParamFilter implements GlobalFilter, Ordered {
                         .uri(updatedUri)
                         .build();
 
-                    log.info("Added headers and query param for service '{}' userId={}", serviceId, userId);
+                    log.info("AddUserHeaderAndParamFilter: added headers and query param for service '{}', userId={}", serviceId, userId);
+                    log.debug("AddUserHeaderAndParamFilter: forwarding requestWithHeadersAndParam for service '{}', userId={}", serviceId, userId);
                     return chain.filter(exchange.mutate().request(requestWithHeadersAndParam).build());
                 }
 
@@ -114,7 +120,8 @@ public class AddUserHeaderAndParamFilter implements GlobalFilter, Ordered {
                         try {
                             newBytes = objectMapper.writeValueAsBytes(payload);
                         } catch (Exception e) {
-                            log.warn("Failed to serialize payload, forwarding original", e);
+                            log.warn("AddUserHeaderAndParamFilter: failed to serialize payload – forwarding original", e);
+                            log.debug("AddUserHeaderAndParamFilter: forwarding original body for service '{}', userId={}", serviceId, userId);
                             return Flux.from(exchange.getRequest().getBody());
                         }
                         return Flux.just(exchange.getResponse().bufferFactory().wrap(newBytes));
@@ -130,14 +137,20 @@ public class AddUserHeaderAndParamFilter implements GlobalFilter, Ordered {
                     public HttpHeaders getHeaders() {
                         HttpHeaders headers = new HttpHeaders();
                         headers.putAll(super.getHeaders());
-                        headers.setContentLength(((DataBuffer) cachedBody.blockFirst()).readableByteCount());
+                        DataBuffer firstBuffer = cachedBody.blockFirst();
+                        int length = (firstBuffer != null) ? firstBuffer.readableByteCount() : 0;
+                        headers.setContentLength(length);
                         return headers;
                     }
                 };
 
-                log.info("Added headers and enriched body for service '{}' userId={}", serviceId, userId);
+                log.info("AddUserHeaderAndParamFilter: added headers and enriched body for service '{}', userId={}", serviceId, userId);
+                log.debug("AddUserHeaderAndParamFilter: forwarding mutatedRequest for service '{}', userId={}", serviceId, userId);
                 return chain.filter(exchange.mutate().request(mutatedRequest).build());
             })
-            .switchIfEmpty(Mono.defer(() -> chain.filter(exchange)));
+            .switchIfEmpty(Mono.defer(() -> {
+                log.debug("AddUserHeaderAndParamFilter: no authenticated user or no employeeId claim – skipping");
+                return chain.filter(exchange);
+            }));
     }
 }
