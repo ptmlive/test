@@ -1,24 +1,4 @@
-import com.example.gateway.config.AuthorizationConfiguration;
-import com.example.gateway.config.BasicAuthService;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.cloud.gateway.filter.GlobalFilter;
-import org.springframework.core.annotation.Order;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.ReactiveSecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.stereotype.Component;
-import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
-import org.springframework.cloud.gateway.route.Route;
-import org.springframework.web.server.ServerWebExchange;
-import org.springframework.cloud.gateway.filter.GatewayFilterChain;
-import reactor.core.publisher.Mono;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 @Slf4j
 @Component
@@ -30,51 +10,89 @@ public class OverrideAuthorizationHeaderFilter implements GlobalFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
+        log.debug("OverrideAuthorizationHeaderFilter: start processing");
+        Route route = getRoute(exchange);
         if (route == null) {
             log.debug("OverrideAuthorizationHeaderFilter: no route found – skipping");
             return chain.filter(exchange);
         }
+
         String serviceId = route.getUri().getHost();
-        if (!authorizationConfiguration.isBasicAuthForService(serviceId)) {
+        if (!requiresBasicAuth(serviceId)) {
             log.debug("OverrideAuthorizationHeaderFilter: basic auth not required for '{}' – skipping", serviceId);
             return chain.filter(exchange);
         }
+
         return ReactiveSecurityContextHolder.getContext()
             .map(ctx -> ctx.getAuthentication())
             .filter(Authentication::isAuthenticated)
-            .flatMap(auth -> {
-                Object principal = auth.getPrincipal();
-                if (!(principal instanceof Jwt)) {
-                    log.debug("OverrideAuthorizationHeaderFilter: principal is not Jwt – skipping");
-                    return chain.filter(exchange);
-                }
-                Jwt jwt = (Jwt) principal;
-                BasicAuthService basicAuthService = authorizationConfiguration.getBasicAuthServices().get(serviceId);
-                if (basicAuthService == null) {
-                    log.debug("OverrideAuthorizationHeaderFilter: no BasicAuthService for '{}' – skipping", serviceId);
-                    return chain.filter(exchange);
-                }
-                List<?> authoritiesClaim = jwt.getClaimAsStringList("authorities");
-                Set<String> required = basicAuthService.getRequiredAuthorities(exchange.getRequest());
-                boolean allowed = required.isEmpty() || authoritiesClaim.stream().map(Object::toString).anyMatch(required::contains);
-                if (!allowed) {
-                    log.debug("OverrideAuthorizationHeaderFilter: insufficient authorities for '{}' – returning 403", serviceId);
-                    exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
-                    return exchange.getResponse().setComplete();
-                }
-                String headerValue = basicAuthService.getBasicAuthorizationHeader();
-                ServerWebExchange mutated = exchange.mutate()
-                    .request(exchange.getRequest().mutate()
-                        .header(HttpHeaders.AUTHORIZATION, headerValue)
-                        .build())
-                    .build();
-                log.info("OverrideAuthorizationHeaderFilter: added Basic Authorization for '{}'", serviceId);
-                return chain.filter(mutated);
-            })
-            .switchIfEmpty(Mono.defer(() -> {
-                log.debug("OverrideAuthorizationHeaderFilter: user not authenticated – skipping");
-                return chain.filter(exchange);
-            }));
+            .flatMap(auth -> handleAuthenticated(exchange, chain, serviceId, auth))
+            .switchIfEmpty(logAndContinue(exchange, "OverrideAuthorizationHeaderFilter: user not authenticated – skipping"));
+    }
+
+    private Route getRoute(ServerWebExchange exchange) {
+        return exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
+    }
+
+    private boolean requiresBasicAuth(String serviceId) {
+        return authorizationConfiguration.isBasicAuthForService(serviceId);
+    }
+
+    private Mono<Void> handleAuthenticated(ServerWebExchange exchange, GatewayFilterChain chain,
+                                           String serviceId, Authentication auth) {
+        Object principal = auth.getPrincipal();
+        if (!(principal instanceof Jwt)) {
+            log.debug("OverrideAuthorizationHeaderFilter: principal is not Jwt – skipping");
+            return chain.filter(exchange);
+        }
+
+        Jwt jwt = (Jwt) principal;
+        BasicAuthService basicAuthService = authorizationConfiguration.getBasicAuthServices().get(serviceId);
+        if (basicAuthService == null) {
+            log.debug("OverrideAuthorizationHeaderFilter: no BasicAuthService for '{}' – skipping", serviceId);
+            return chain.filter(exchange);
+        }
+
+        Set<String> requiredAuthorities = getRequiredAuthorities(basicAuthService, exchange);
+        List<?> userAuthorities = jwt.getClaimAsStringList("authorities");
+        if (!hasAuthority(requiredAuthorities, userAuthorities)) {
+            log.debug("OverrideAuthorizationHeaderFilter: insufficient authorities for '{}' – returning 403", serviceId);
+            exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
+            return exchange.getResponse().setComplete();
+        }
+
+        return addBasicHeaderAndContinue(exchange, chain, serviceId, basicAuthService);
+    }
+
+    private Set<String> getRequiredAuthorities(BasicAuthService basicAuthService, ServerWebExchange exchange) {
+        return basicAuthService.getRequiredAuthorities(exchange.getRequest());
+    }
+
+    private boolean hasAuthority(Set<String> required, List<?> userAuthorities) {
+        if (required.isEmpty()) {
+            return true;
+        }
+        return userAuthorities.stream()
+            .map(Object::toString)
+            .anyMatch(required::contains);
+    }
+
+    private Mono<Void> addBasicHeaderAndContinue(ServerWebExchange exchange, GatewayFilterChain chain,
+                                                 String serviceId, BasicAuthService basicAuthService) {
+        String headerValue = basicAuthService.getBasicAuthorizationHeader();
+        log.info("OverrideAuthorizationHeaderFilter: added Basic Authorization for '{}'", serviceId);
+
+        ServerWebExchange mutated = exchange.mutate()
+            .request(exchange.getRequest().mutate()
+                .header(HttpHeaders.AUTHORIZATION, headerValue)
+                .build())
+            .build();
+
+        return chain.filter(mutated);
+    }
+
+    private Mono<Void> logAndContinue(ServerWebExchange exchange, String message) {
+        log.debug(message);
+        return exchange.getResponse().setComplete().then(Mono.defer(() -> exchange.getResponse().setComplete()));
     }
 }
