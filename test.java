@@ -9,17 +9,14 @@ public class SecurityConfiguration {
 
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
-        ServerHttpSecurity.AuthorizeExchangeSpec exchanges = http
+        return http
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
-                .authorizeExchange();
-
-        if (!authenticatedEndpoints.isEmpty()) {
-            exchanges = exchanges
-                    .pathMatchers(authenticatedEndpoints.toArray(new String[0])).authenticated();
-        }
-
-        exchanges.anyExchange().permitAll();
-
-        return http.build();
+                .authorizeHttpRequests(auth -> {
+                    if (!authenticatedEndpoints.isEmpty()) {
+                        auth.pathMatchers(authenticatedEndpoints.toArray(new String[0])).authenticated();
+                    }
+                    auth.anyExchange().permitAll();
+                })
+                .build();
     }
 }
