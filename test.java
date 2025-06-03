@@ -25,21 +25,22 @@ public class BasePathPrependFilter implements GlobalFilter, Ordered {
         String originalPath = exchange.getRequest().getURI().getPath();
 
         return discoveryClient.getServices()
-            .flatMapMany(serviceIds -> Flux.fromIterable(serviceIds))
-            .flatMap(serviceId -> discoveryClient.getInstances(serviceId))
+            .flatMapMany(serviceIds -> Flux.fromIterable(serviceIds)) // OK: Mono<List<String>> → Flux<String>
+            .flatMap(discoveryClient::getInstances) // Flux<ServiceInstance>
             .filter(serviceInstance -> {
                 String serviceId = serviceInstance.getServiceId().toLowerCase();
                 return originalPath.startsWith("/" + serviceId);
             })
             .next()
+            .defaultIfEmpty(null)
             .flatMap(serviceInstance -> {
                 if (serviceInstance == null) {
                     log.info("No matching service found for path: {}", originalPath);
                     return chain.filter(exchange);
                 }
 
-                String basePath = serviceInstance.getMetadata().getOrDefault("basePath", "");
                 String servicePrefix = "/" + serviceInstance.getServiceId().toLowerCase();
+                String basePath = serviceInstance.getMetadata().getOrDefault("basePath", "");
 
                 if (basePath.isEmpty()) {
                     log.info("Service '{}' is on-prem. Passing path through unchanged: {}", serviceInstance.getServiceId(), originalPath);
@@ -60,6 +61,6 @@ public class BasePathPrependFilter implements GlobalFilter, Ordered {
 
     @Override
     public int getOrder() {
-        return -1; // musi być przed routingiem
+        return -1;
     }
 }
