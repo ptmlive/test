@@ -7,11 +7,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.server.reactive.ServerHttpResponse;
-import org.springframework.web.server.ServerWebExchange;
-import org.springframework.web.server.adapter.DefaultServerWebExchange;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
-import org.springframework.mock.http.server.reactive.MockServerHttpResponse;
+import org.springframework.mock.web.server.MockServerWebExchange;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -37,8 +35,7 @@ class AddRequestIdHeaderFilterTest {
         MockServerHttpRequest request = MockServerHttpRequest.post("http://localhost/test")
             .remoteAddress(new InetSocketAddress("127.0.0.1", 1234))
             .build();
-        MockServerHttpResponse response = new MockServerHttpResponse();
-        return new DefaultServerWebExchange(request, response, null);
+        return MockServerWebExchange.from(request);
     }
 
     @Test
