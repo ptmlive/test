@@ -40,24 +40,51 @@ public class AddUserAsBodyFieldFilter implements GlobalFilter {
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
 
-        if (!HttpMethod.POST.equals(request.getMethod())) {
+        if (isNotPost(request)) {
             log.debug("skipping enrichment: not a POST request");
             return chain.filter(exchange);
         }
 
-        Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
-        if (route == null) {
+        String serviceId = extractServiceId(exchange);
+        if (serviceId == null) {
             log.debug("skipping enrichment: no route found");
             return chain.filter(exchange);
         }
-        String serviceId = route.getUri().getHost();
 
-        if (!authorizationConfiguration.getServicesToAddUserAsPostBodyField().contains(serviceId)) {
+        if (isServiceNotConfigured(serviceId)) {
             log.debug("skipping enrichment: service '{}' not configured", serviceId);
             return chain.filter(exchange);
         }
 
-        Mono<String> userIdMono = ReactiveSecurityContextHolder.getContext()
+        return extractUserId()
+            .flatMap(userId -> {
+                if (StringUtils.isEmpty(userId)) {
+                    log.debug("skipping enrichment: empty employeeId claim");
+                    return chain.filter(exchange);
+                }
+                return enrichBody(exchange, chain, request, serviceId, userId);
+            })
+            .switchIfEmpty(Mono.defer(() -> {
+                log.debug("skipping enrichment: no authenticated user or missing employeeId");
+                return chain.filter(exchange);
+            }));
+    }
+
+    private boolean isNotPost(ServerHttpRequest request) {
+        return !HttpMethod.POST.equals(request.getMethod());
+    }
+
+    private String extractServiceId(ServerWebExchange exchange) {
+        Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
+        return (route != null) ? route.getUri().getHost() : null;
+    }
+
+    private boolean isServiceNotConfigured(String serviceId) {
+        return !authorizationConfiguration.getServicesToAddUserAsPostBodyField().contains(serviceId);
+    }
+
+    private Mono<String> extractUserId() {
+        return ReactiveSecurityContextHolder.getContext()
             .map(ctx -> ctx.getAuthentication())
             .filter(Authentication::isAuthenticated)
             .map(Authentication::getPrincipal)
@@ -68,82 +95,83 @@ public class AddUserAsBodyFieldFilter implements GlobalFilter {
                 log.warn("cannot extract employeeId from JWT; skipping enrichment", e);
                 return Mono.empty();
             });
+    }
 
-        return userIdMono
-            .flatMap(userId -> {
-                if (!StringUtils.hasText(userId)) {
-                    log.debug("skipping enrichment: empty employeeId claim");
-                    return chain.filter(exchange);
+    private Mono<Void> enrichBody(ServerWebExchange exchange, GatewayFilterChain chain,
+                                  ServerHttpRequest request, String serviceId, String userId) {
+        return DataBufferUtils.join(request.getBody())
+            .flatMap(dataBuffer -> {
+                byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                dataBuffer.read(bytes);
+                DataBufferUtils.release(dataBuffer);
+
+                Map<String, Object> payload = parseOriginalBody(bytes);
+                payload.put("user", userId);
+
+                byte[] newBytes;
+                try {
+                    newBytes = objectMapper.writeValueAsBytes(payload);
+                } catch (Exception ex) {
+                    log.warn("failed to serialize modified payload; forwarding original request", ex);
+                    return forwardOriginalBody(exchange, chain, request, bytes);
                 }
 
-                return DataBufferUtils.join(request.getBody())
-                    .flatMap(dataBuffer -> {
-                        byte[] bytes = new byte[dataBuffer.readableByteCount()];
-                        dataBuffer.read(bytes);
-                        DataBufferUtils.release(dataBuffer);
-
-                        Map<String, Object> payload;
-                        try {
-                            String bodyString = new String(bytes, StandardCharsets.UTF_8);
-                            payload = objectMapper.readValue(bodyString, new TypeReference<Map<String, Object>>() {});
-                        } catch (Exception ex) {
-                            payload = new HashMap<>();
-                        }
-                        payload.put("user", userId);
-
-                        byte[] newBytes;
-                        try {
-                            newBytes = objectMapper.writeValueAsBytes(payload);
-                        } catch (Exception ex) {
-                            log.warn("failed to serialize modified payload; forwarding original request", ex);
-                            Flux<DataBuffer> originalBodyFlux = Flux.just(
-                                exchange.getResponse().bufferFactory().wrap(bytes)
-                            );
-                            ServerHttpRequest restoreReq = new ServerHttpRequestDecorator(request) {
-                                @Override
-                                public Flux<DataBuffer> getBody() {
-                                    return originalBodyFlux;
-                                }
-                                @Override
-                                public HttpHeaders getHeaders() {
-                                    HttpHeaders headers = new HttpHeaders();
-                                    headers.putAll(super.getHeaders());
-                                    headers.setContentLength(bytes.length);
-                                    return headers;
-                                }
-                            };
-                            return chain.filter(exchange.mutate().request(restoreReq).build());
-                        }
-
-                        Flux<DataBuffer> newBodyFlux = Flux.just(
-                            exchange.getResponse().bufferFactory().wrap(newBytes)
-                        );
-
-                        ServerHttpRequest mutatedReq = new ServerHttpRequestDecorator(request) {
-                            @Override
-                            public Flux<DataBuffer> getBody() {
-                                return newBodyFlux;
-                            }
-                            @Override
-                            public HttpHeaders getHeaders() {
-                                HttpHeaders headers = new HttpHeaders();
-                                headers.putAll(super.getHeaders());
-                                headers.setContentLength(newBytes.length);
-                                return headers;
-                            }
-                        };
-
-                        log.info("enriched request body with user='{}' for service '{}'", userId, serviceId);
-                        return chain.filter(exchange.mutate().request(mutatedReq).build());
-                    })
-                    .switchIfEmpty(Mono.defer(() -> {
-                        log.debug("skipping enrichment: empty request body");
-                        return chain.filter(exchange);
-                    }));
+                ServerHttpRequest mutatedReq = buildMutatedRequest(request, newBytes);
+                log.info("enriched request body with user='{}' for service '{}'", userId, serviceId);
+                return chain.filter(exchange.mutate().request(mutatedReq).build());
             })
             .switchIfEmpty(Mono.defer(() -> {
-                log.debug("skipping enrichment: no authenticated user or missing employeeId");
+                log.debug("skipping enrichment: empty request body");
                 return chain.filter(exchange);
             }));
+    }
+
+    private Map<String, Object> parseOriginalBody(byte[] bytes) {
+        try {
+            String bodyString = new String(bytes, StandardCharsets.UTF_8);
+            return objectMapper.readValue(bodyString, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            return new HashMap<>();
+        }
+    }
+
+    private Mono<Void> forwardOriginalBody(ServerWebExchange exchange, GatewayFilterChain chain,
+                                           ServerHttpRequest request, byte[] bytes) {
+        Flux<DataBuffer> originalBodyFlux = Flux.just(
+            exchange.getResponse().bufferFactory().wrap(bytes)
+        );
+        ServerHttpRequest restoreReq = new ServerHttpRequestDecorator(request) {
+            @Override
+            public Flux<DataBuffer> getBody() {
+                return originalBodyFlux;
+            }
+            @Override
+            public HttpHeaders getHeaders() {
+                HttpHeaders headers = new HttpHeaders();
+                headers.putAll(super.getHeaders());
+                headers.setContentLength(bytes.length);
+                return headers;
+            }
+        };
+        return chain.filter(exchange.mutate().request(restoreReq).build());
+    }
+
+    private ServerHttpRequest buildMutatedRequest(ServerHttpRequest request, byte[] newBytes) {
+        Flux<DataBuffer> newBodyFlux = Flux.just(
+            request.exchange().getResponse().bufferFactory().wrap(newBytes)
+        );
+        return new ServerHttpRequestDecorator(request) {
+            @Override
+            public Flux<DataBuffer> getBody() {
+                return newBodyFlux;
+            }
+            @Override
+            public HttpHeaders getHeaders() {
+                HttpHeaders headers = new HttpHeaders();
+                headers.putAll(super.getHeaders());
+                headers.setContentLength(newBytes.length);
+                return headers;
+            }
+        };
     }
 }
