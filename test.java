@@ -10,7 +10,7 @@ import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
-import org.springframework.mock.web.server.MockServerWebExchange;
+import org.springframework.mock.web.server.reactive.MockServerWebExchange;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -69,10 +69,8 @@ class AddUserAsBodyFieldFilterTest {
     }
 
     private Context authContextWithJwtClaim(String claimKey, String claimValue) {
-        Jwt jwt = Jwt.withTokenValue("token")
-            .header("alg", "none")
-            .claim(claimKey, claimValue)
-            .build();
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString(claimKey)).thenReturn(claimValue);
         TestingAuthenticationToken auth = new TestingAuthenticationToken(jwt, null);
         return ReactiveSecurityContextHolder.withAuthentication(auth);
     }
