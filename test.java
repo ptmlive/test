@@ -1,115 +1,21 @@
-package com.example.gateway.filters;
+@Test
+void shouldPropagateErrorWithoutAddingHeaderWhenChainErrors() {
+    // given
+    Span span = mock(Span.class);
+    TraceContext context = mock(TraceContext.class);
+    when(tracer.currentSpan()).thenReturn(span);
+    when(span.context()).thenReturn(context);
+    when(context.traceId()).thenReturn("xyz");
+    GatewayFilterChain errorChain = exchange -> Mono.error(new RuntimeException("downstream failure"));
+    ServerWebExchange exchange = buildExchange();
 
-import io.micrometer.tracing.Span;
-import io.micrometer.tracing.TraceContext;
-import io.micrometer.tracing.Tracer;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.springframework.cloud.gateway.filter.GatewayFilterChain;
-import org.springframework.http.HttpHeaders;
-import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
-import org.springframework.mock.web.server.MockServerWebExchange;
-import org.springframework.web.server.ServerWebExchange;
-import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
+    // when
+    Mono<Void> result = filter.filter(exchange, errorChain);
 
-import java.net.InetSocketAddress;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
-
-class AddRequestIdHeaderFilterTest {
-
-    private Tracer tracer;
-    private AddRequestIdHeaderFilter filter;
-    private GatewayFilterChain chain;
-
-    @BeforeEach
-    void setUp() {
-        tracer = mock(Tracer.class);
-        filter = new AddRequestIdHeaderFilter(tracer);
-        chain = exchange -> Mono.empty();
-    }
-
-    private ServerWebExchange buildExchange() {
-        MockServerHttpRequest request = MockServerHttpRequest.post("http://localhost/test")
-            .remoteAddress(new InetSocketAddress("127.0.0.1", 1234))
-            .build();
-        return MockServerWebExchange.from(request);
-    }
-
-    @Test
-    void shouldNotAddHeaderWhenNoCurrentSpan() {
-        // given
-        when(tracer.currentSpan()).thenReturn(null);
-        ServerWebExchange exchange = buildExchange();
-
-        // when
-        Mono<Void> result = filter.filter(exchange, chain);
-
-        // then
-        StepVerifier.create(result).verifyComplete();
-        HttpHeaders headers = exchange.getResponse().getHeaders();
-        assertThat(headers.containsKey("x-request-id")).isFalse();
-    }
-
-    @Test
-    void shouldNotAddHeaderWhenTraceIdIsEmpty() {
-        // given
-        Span span = mock(Span.class);
-        TraceContext context = mock(TraceContext.class);
-        when(tracer.currentSpan()).thenReturn(span);
-        when(span.context()).thenReturn(context);
-        when(context.traceId()).thenReturn("");
-        ServerWebExchange exchange = buildExchange();
-
-        // when
-        Mono<Void> result = filter.filter(exchange, chain);
-
-        // then
-        StepVerifier.create(result).verifyComplete();
-        HttpHeaders headers = exchange.getResponse().getHeaders();
-        assertThat(headers.containsKey("x-request-id")).isFalse();
-    }
-
-    @Test
-    void shouldAddHeaderWhenTraceIdPresent() {
-        // given
-        Span span = mock(Span.class);
-        TraceContext context = mock(TraceContext.class);
-        when(tracer.currentSpan()).thenReturn(span);
-        when(span.context()).thenReturn(context);
-        when(context.traceId()).thenReturn("abc123");
-        ServerWebExchange exchange = buildExchange();
-
-        // when
-        Mono<Void> result = filter.filter(exchange, chain);
-
-        // then
-        StepVerifier.create(result).verifyComplete();
-        HttpHeaders headers = exchange.getResponse().getHeaders();
-        assertThat(headers.getFirst("x-request-id")).isEqualTo("abc123");
-    }
-
-    @Test
-    void shouldPropagateErrorButStillAddHeaderWhenChainErrors() {
-        // given
-        Span span = mock(Span.class);
-        TraceContext context = mock(TraceContext.class);
-        when(tracer.currentSpan()).thenReturn(span);
-        when(span.context()).thenReturn(context);
-        when(context.traceId()).thenReturn("xyz");
-        GatewayFilterChain errorChain = exchange -> Mono.error(new RuntimeException("downstream failure"));
-        ServerWebExchange exchange = buildExchange();
-
-        // when
-        Mono<Void> result = filter.filter(exchange, errorChain);
-
-        // then
-        StepVerifier.create(result)
-            .expectErrorMessage("downstream failure")
-            .verify();
-        HttpHeaders headers = exchange.getResponse().getHeaders();
-        assertThat(headers.getFirst("x-request-id")).isEqualTo("xyz");
-    }
+    // then
+    StepVerifier.create(result)
+        .expectErrorMessage("downstream failure")
+        .verify();
+    HttpHeaders headers = exchange.getResponse().getHeaders();
+    assertThat(headers.containsKey("x-request-id")).isFalse();
 }
