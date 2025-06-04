@@ -41,14 +41,20 @@ class AddUserAsBodyFieldFilterTest {
     }
 
     private ServerWebExchange buildExchange(String bodyJson, String serviceId, HttpMethod method) {
-        MockServerHttpRequest.Builder builder =
-            MockServerHttpRequest
-                .method(method, "http://localhost/" + serviceId + "/endpoint")
-                .contentType(MediaType.APPLICATION_JSON);
+        MockServerHttpRequest request;
         if (bodyJson != null) {
-            builder.body(bodyJson);
+            request = MockServerHttpRequest
+                .method(method, "http://localhost/" + serviceId + "/endpoint")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(bodyJson);
+        } else {
+            request = MockServerHttpRequest
+                .method(method, "http://localhost/" + serviceId + "/endpoint")
+                .contentType(MediaType.APPLICATION_JSON)
+                .build();
         }
-        MockServerWebExchange exchange = MockServerWebExchange.from(builder);
+
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
         Route fakeRoute = Route
             .async()
             .id(serviceId)
