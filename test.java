@@ -1,177 +1,149 @@
 package com.example.gateway.filters;
 
 import com.example.gateway.config.AuthorizationConfiguration;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.cloud.gateway.filter.GlobalFilter;
+import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
+import org.springframework.cloud.gateway.route.Route;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
-import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
-import org.springframework.mock.web.server.MockServerWebExchange;
-import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
+import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
-import reactor.util.context.Context;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AddUserAsBodyFieldFilter implements GlobalFilter {
 
-class AddUserAsBodyFieldFilterTest {
+    private final ObjectMapper objectMapper;
+    private final AuthorizationConfiguration authorizationConfiguration;
 
-    private AddUserAsBodyFieldFilter filter;
-    private AuthorizationConfiguration authConfig;
-    private ObjectMapper objectMapper;
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        ServerHttpRequest request = exchange.getRequest();
 
-    @BeforeEach
-    void setUp() {
-        authConfig = mock(AuthorizationConfiguration.class);
-        objectMapper = new ObjectMapper();
-        // by default, only "my-service" expects user in POST body
-        when(authConfig.getServicesToAddUserAsPostBodyField()).thenReturn(Collections.singleton("my-service"));
-        filter = new AddUserAsBodyFieldFilter(objectMapper, authConfig);
-    }
-
-    private ServerWebExchange buildExchange(String bodyJson, String serviceId, HttpMethod method) {
-        MockServerHttpRequest.Builder builder = MockServerHttpRequest
-            .method(method, "http://localhost/" + serviceId + "/endpoint")
-            .contentType(MediaType.APPLICATION_JSON);
-        if (bodyJson != null) {
-            builder.body(bodyJson);
+        if (!HttpMethod.POST.equals(request.getMethod())) {
+            log.debug("skipping enrichment: not a POST request");
+            return chain.filter(exchange);
         }
-        MockServerWebExchange exchange = MockServerWebExchange.from(builder);
-        // set serviceId attribute for routing
-        exchange.getAttributes().put("serviceId", serviceId);
-        return exchange;
-    }
 
-    private Context authContextWithJwtClaim(String claimKey, String claimValue) {
-        Jwt jwt = Jwt.withTokenValue("token")
-            .header("alg", "none")
-            .claim(claimKey, claimValue)
-            .build();
-        TestingAuthenticationToken auth = new TestingAuthenticationToken(jwt, null);
-        return ReactiveSecurityContextHolder.withAuthentication(auth);
-    }
+        Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
+        if (route == null) {
+            log.debug("skipping enrichment: no route found");
+            return chain.filter(exchange);
+        }
+        String serviceId = route.getUri().getHost();
 
-    @Test
-    void shouldApplyFilterOnlyWhenRequestMethodIsPost() {
-        // given: a GET request to my-service
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.GET);
-        Context ctx = authContextWithJwtClaim("employeeId", "user123");
+        if (!authorizationConfiguration.getServicesToAddUserAsPostBodyField().contains(serviceId)) {
+            log.debug("skipping enrichment: service '{}' not configured", serviceId);
+            return chain.filter(exchange);
+        }
 
-        // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
+        Mono<String> userIdMono = ReactiveSecurityContextHolder.getContext()
+            .map(ctx -> ctx.getAuthentication())
+            .filter(Authentication::isAuthenticated)
+            .map(Authentication::getPrincipal)
+            .filter(principal -> principal instanceof Jwt)
+            .cast(Jwt.class)
+            .map(jwt -> jwt.getClaimAsString("employeeId"))
+            .onErrorResume(e -> {
+                log.warn("cannot extract employeeId from JWT; skipping enrichment", e);
+                return Mono.empty();
+            });
 
-        // then: filter completes, body must remain unchanged (no "user" field)
-        StepVerifier.create(result).verifyComplete();
+        return userIdMono
+            .flatMap(userId -> {
+                if (!StringUtils.hasText(userId)) {
+                    log.debug("skipping enrichment: empty employeeId claim");
+                    return chain.filter(exchange);
+                }
 
-        // attempt to read request body from the mutated exchange
-        String body = readRequestBody(exchange);
-        assertThat(body).isEqualTo("{\"foo\":\"bar\"}");
-    }
+                return DataBufferUtils.join(request.getBody())
+                    .flatMap(dataBuffer -> {
+                        byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                        dataBuffer.read(bytes);
+                        DataBufferUtils.release(dataBuffer);
 
-    @Test
-    void shouldNotApplyFilterWhenServiceIsMissingInConfiguration() {
-        // given: service not in config
-        when(authConfig.getServicesToAddUserAsPostBodyField()).thenReturn(Collections.emptySet());
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "other-service", HttpMethod.POST);
-        Context ctx = authContextWithJwtClaim("employeeId", "user123");
+                        Map<String, Object> payload;
+                        try {
+                            String bodyString = new String(bytes, StandardCharsets.UTF_8);
+                            payload = objectMapper.readValue(bodyString, new TypeReference<Map<String, Object>>() {});
+                        } catch (Exception ex) {
+                            payload = new HashMap<>();
+                        }
+                        payload.put("user", userId);
 
-        // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
+                        byte[] newBytes;
+                        try {
+                            newBytes = objectMapper.writeValueAsBytes(payload);
+                        } catch (Exception ex) {
+                            log.warn("failed to serialize modified payload; forwarding original request", ex);
+                            Flux<DataBuffer> originalBodyFlux = Flux.just(
+                                exchange.getResponse().bufferFactory().wrap(bytes)
+                            );
+                            ServerHttpRequest restoreReq = new ServerHttpRequestDecorator(request) {
+                                @Override
+                                public Flux<DataBuffer> getBody() {
+                                    return originalBodyFlux;
+                                }
+                                @Override
+                                public HttpHeaders getHeaders() {
+                                    HttpHeaders headers = new HttpHeaders();
+                                    headers.putAll(super.getHeaders());
+                                    headers.setContentLength(bytes.length);
+                                    return headers;
+                                }
+                            };
+                            return chain.filter(exchange.mutate().request(restoreReq).build());
+                        }
 
-        // then: no enrichment, body remains the original
-        StepVerifier.create(result).verifyComplete();
-        String body = readRequestBody(exchange);
-        assertThat(body).isEqualTo("{\"foo\":\"bar\"}");
-    }
+                        Flux<DataBuffer> newBodyFlux = Flux.just(
+                            exchange.getResponse().bufferFactory().wrap(newBytes)
+                        );
 
-    @Test
-    void shouldNotApplyFilterWhenAuthenticatedButEmployeeIdClaimNotPresent() {
-        // given: POST to my-service, JWT missing “employeeId”
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
-        Context ctx = authContextWithJwtClaim("wrongClaim", "value");
+                        ServerHttpRequest mutatedReq = new ServerHttpRequestDecorator(request) {
+                            @Override
+                            public Flux<DataBuffer> getBody() {
+                                return newBodyFlux;
+                            }
+                            @Override
+                            public HttpHeaders getHeaders() {
+                                HttpHeaders headers = new HttpHeaders();
+                                headers.putAll(super.getHeaders());
+                                headers.setContentLength(newBytes.length);
+                                return headers;
+                            }
+                        };
 
-        // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
-
-        // then: no enrichment
-        StepVerifier.create(result).verifyComplete();
-        String body = readRequestBody(exchange);
-        assertThat(body).isEqualTo("{\"foo\":\"bar\"}");
-    }
-
-    @Test
-    void shouldNotApplyFilterWhenNotAuthenticated() {
-        // given: POST to my-service, no authentication context
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
-
-        // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty());
-
-        // then: no enrichment
-        StepVerifier.create(result).verifyComplete();
-        String body = readRequestBody(exchange);
-        assertThat(body).isEqualTo("{\"foo\":\"bar\"}");
-    }
-
-    @Test
-    void shouldAddUserAsBodyField() {
-        // given: POST to my-service with valid JWT having "employeeId" claim
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
-        Context ctx = authContextWithJwtClaim("employeeId", "user123");
-
-        // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
-
-        // then: original JSON plus "user":"user123"
-        StepVerifier.create(result).verifyComplete();
-        String body = readRequestBody(exchange);
-        JsonNode json = objectMapper.readTree(body);
-        assertThat(json.get("user").asText()).isEqualTo("user123");
-        assertThat(json.get("foo").asText()).isEqualTo("bar");
-    }
-
-    @Test
-    void shouldBeExecutedBeforeSendingTheRequest() {
-        // given: ensure chain is invoked
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
-        Context ctx = authContextWithJwtClaim("employeeId", "user123");
-        boolean[] chainInvoked = {false};
-        GatewayFilterChain customChain = e -> {
-            chainInvoked[0] = true;
-            return Mono.empty();
-        };
-
-        // when
-        Mono<Void> result = filter.filter(exchange, customChain).contextWrite(ctx);
-
-        // then
-        StepVerifier.create(result).verifyComplete();
-        assertThat(chainInvoked[0]).isTrue();
-    }
-
-    // Utility method to read request body from the (possibly mutated) exchange
-    private String readRequestBody(ServerWebExchange exchange) {
-        Flux<DataBuffer> bodyFlux = exchange.getRequest().getBody();
-        return bodyFlux
-            .map(buffer -> {
-                byte[] bytes = new byte[buffer.readableByteCount()];
-                buffer.read(bytes);
-                return new String(bytes, StandardCharsets.UTF_8);
+                        log.info("enriched request body with user='{}' for service '{}'", userId, serviceId);
+                        return chain.filter(exchange.mutate().request(mutatedReq).build());
+                    })
+                    .switchIfEmpty(Mono.defer(() -> {
+                        log.debug("skipping enrichment: empty request body");
+                        return chain.filter(exchange);
+                    }));
             })
-            .reduce("", String::concat)
-            .block();
+            .switchIfEmpty(Mono.defer(() -> {
+                log.debug("skipping enrichment: no authenticated user or missing employeeId");
+                return chain.filter(exchange);
+            }));
     }
 }
