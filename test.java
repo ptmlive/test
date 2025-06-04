@@ -68,6 +68,10 @@ class AddUserAsBodyFieldFilterTest {
         return exchange;
     }
 
+    /**
+     * Teraz budujemy „Context” w Reactorze tak, żeby
+     * ReactiveSecurityContextHolder.getContext() znalazł nasz principal.
+     */
     private Context authContextWithJwtClaim(String claimKey, String claimValue) {
         Jwt jwt = mock(Jwt.class);
         when(jwt.getClaimAsString(claimKey)).thenReturn(claimValue);
@@ -81,8 +85,8 @@ class AddUserAsBodyFieldFilterTest {
         ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.GET);
         Context ctx = authContextWithJwtClaim("employeeId", "user123");
 
-        // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
+        // when  (UWAGA: zamiast .contextWrite(...) używamy .subscriberContext(...)
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).subscriberContext(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
@@ -98,7 +102,7 @@ class AddUserAsBodyFieldFilterTest {
         Context ctx = authContextWithJwtClaim("employeeId", "user123");
 
         // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).subscriberContext(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
@@ -113,7 +117,7 @@ class AddUserAsBodyFieldFilterTest {
         Context ctx = authContextWithJwtClaim("wrongClaim", "value");
 
         // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).subscriberContext(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
@@ -126,7 +130,7 @@ class AddUserAsBodyFieldFilterTest {
         // given
         ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
 
-        // when
+        // when  (bez contextu – udajemy, że nie ma Authentication)
         Mono<Void> result = filter.filter(exchange, e -> Mono.empty());
 
         // then
@@ -146,8 +150,8 @@ class AddUserAsBodyFieldFilterTest {
             return Mono.empty();
         };
 
-        // when
-        Mono<Void> result = filter.filter(original, capturingChain).contextWrite(ctx);
+        // when (tutaj również używamy subscriberContext)
+        Mono<Void> result = filter.filter(original, capturingChain).subscriberContext(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
@@ -171,7 +175,7 @@ class AddUserAsBodyFieldFilterTest {
         };
 
         // when
-        Mono<Void> result = filter.filter(exchange, customChain).contextWrite(ctx);
+        Mono<Void> result = filter.filter(exchange, customChain).subscriberContext(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
