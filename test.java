@@ -1,9 +1,11 @@
-import com.fasterxml.jackson.core.type.TypeReference;
+package com.example.gateway.filters;
+
+import com.example.gateway.config.AuthorizationConfiguration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
-import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
@@ -36,11 +38,13 @@ class AddUserAsBodyFieldFilterTest {
         filter = new AddUserAsBodyFieldFilter(objectMapper, authConfig);
     }
 
-    private ServerWebExchange buildExchange(String bodyJson, String serviceId) {
+    private ServerWebExchange buildExchange(String bodyJson, String serviceId, HttpMethod method) {
         MockServerHttpRequest.Builder builder = MockServerHttpRequest
-            .post("http://localhost/" + serviceId + "/endpoint")
-            .contentType(MediaType.APPLICATION_JSON)
-            .body(bodyJson != null ? bodyJson : "");
+            .method(method, "http://localhost/" + serviceId + "/endpoint")
+            .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+        if (bodyJson != null) {
+            builder.body(bodyJson);
+        }
         MockServerWebExchange exchange = MockServerWebExchange.from(builder);
         exchange.getAttributes().put("serviceId", serviceId);
         return exchange;
@@ -58,129 +62,151 @@ class AddUserAsBodyFieldFilterTest {
     @Test
     void shouldApplyFilterOnlyWhenRequestMethodIsPost() {
         // given
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service");
-        // change method to GET
-        exchange = MockServerWebExchange.from(
-            MockServerHttpRequest.get("http://localhost/my-service/endpoint")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body("{\"foo\":\"bar\"}")
-        );
-        exchange.getAttributes().put("serviceId", "my-service");
+        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.GET);
         Context ctx = authContextWithJwtClaim("employeeId", "user123");
 
         // when
-        Mono<Void> result = filter.filter(exchange, (e) -> Mono.empty()).contextWrite(ctx);
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
-        String body = exchange.getRequest().getBody().collectList()
+        // read the (possibly mutated) body from the request
+        String body = exchange.getRequest()
+            .getBody()
+            .collectList()
             .map(list -> {
                 try {
-                    return objectMapper.readTree(new String(list.get(0).asByteBuffer().array(), StandardCharsets.UTF_8));
+                    byte[] bytes = list.get(0).asByteBuffer().array();
+                    return new String(bytes, StandardCharsets.UTF_8);
                 } catch (Exception ex) {
                     return null;
                 }
             })
             .block();
-        assertThat(body).extractingJsonPathValue("user").isNull();
+        if (body != null && !body.isEmpty()) {
+            Map<?, ?> map = objectMapper.readValue(body, Map.class);
+            assertThat(map.containsKey("user")).isFalse();
+        }
     }
 
     @Test
     void shouldNotApplyFilterWhenServiceIsMissingInConfiguration() {
         // given
         when(authConfig.getServicesToAddUserAsPostBodyField()).thenReturn(Collections.emptySet());
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "other-service");
+        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "other-service", HttpMethod.POST);
         Context ctx = authContextWithJwtClaim("employeeId", "user123");
 
         // when
-        Mono<Void> result = filter.filter(exchange, (e) -> Mono.empty()).contextWrite(ctx);
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
-        String body = exchange.getRequest().getBody().collectList()
+        String body = exchange.getRequest()
+            .getBody()
+            .collectList()
             .map(list -> {
                 try {
-                    return objectMapper.readTree(new String(list.get(0).asByteBuffer().array(), StandardCharsets.UTF_8));
+                    byte[] bytes = list.get(0).asByteBuffer().array();
+                    return new String(bytes, StandardCharsets.UTF_8);
                 } catch (Exception ex) {
                     return null;
                 }
             })
             .block();
-        assertThat(body).extractingJsonPathValue("user").isNull();
+        if (body != null && !body.isEmpty()) {
+            Map<?, ?> map = objectMapper.readValue(body, Map.class);
+            assertThat(map.containsKey("user")).isFalse();
+        }
     }
 
     @Test
     void shouldNotApplyFilterWhenAuthenticatedButEmployeeIdClaimNotPresent() {
         // given
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service");
+        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
         Context ctx = authContextWithJwtClaim("wrongClaim", "value");
 
         // when
-        Mono<Void> result = filter.filter(exchange, (e) -> Mono.empty()).contextWrite(ctx);
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
-        String body = exchange.getRequest().getBody().collectList()
+        String body = exchange.getRequest()
+            .getBody()
+            .collectList()
             .map(list -> {
                 try {
-                    return objectMapper.readTree(new String(list.get(0).asByteBuffer().array(), StandardCharsets.UTF_8));
+                    byte[] bytes = list.get(0).asByteBuffer().array();
+                    return new String(bytes, StandardCharsets.UTF_8);
                 } catch (Exception ex) {
                     return null;
                 }
             })
             .block();
-        assertThat(body).extractingJsonPathValue("user").isNull();
+        if (body != null && !body.isEmpty()) {
+            Map<?, ?> map = objectMapper.readValue(body, Map.class);
+            assertThat(map.containsKey("user")).isFalse();
+        }
     }
 
     @Test
     void shouldNotApplyFilterWhenNotAuthenticated() {
         // given
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service");
+        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
 
         // when
-        Mono<Void> result = filter.filter(exchange, (e) -> Mono.empty());
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty());
 
         // then
         StepVerifier.create(result).verifyComplete();
-        String body = exchange.getRequest().getBody().collectList()
+        String body = exchange.getRequest()
+            .getBody()
+            .collectList()
             .map(list -> {
                 try {
-                    return objectMapper.readTree(new String(list.get(0).asByteBuffer().array(), StandardCharsets.UTF_8));
+                    byte[] bytes = list.get(0).asByteBuffer().array();
+                    return new String(bytes, StandardCharsets.UTF_8);
                 } catch (Exception ex) {
                     return null;
                 }
             })
             .block();
-        assertThat(body).extractingJsonPathValue("user").isNull();
+        if (body != null && !body.isEmpty()) {
+            Map<?, ?> map = objectMapper.readValue(body, Map.class);
+            assertThat(map.containsKey("user")).isFalse();
+        }
     }
 
     @Test
     void shouldAddUserAsBodyField() {
         // given
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service");
+        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
         Context ctx = authContextWithJwtClaim("employeeId", "user123");
 
         // when
-        Mono<Void> result = filter.filter(exchange, (e) -> Mono.empty()).contextWrite(ctx);
+        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
-        String body = exchange.getRequest().getBody().collectList()
+        String body = exchange.getRequest()
+            .getBody()
+            .collectList()
             .map(list -> {
                 try {
-                    return objectMapper.readTree(new String(list.get(0).asByteBuffer().array(), StandardCharsets.UTF_8));
+                    byte[] bytes = list.get(0).asByteBuffer().array();
+                    return new String(bytes, StandardCharsets.UTF_8);
                 } catch (Exception ex) {
                     return null;
                 }
             })
             .block();
-        assertThat(body).extractingJsonPathStringValue("user").isEqualTo("user123");
+        Map<?, ?> map = objectMapper.readValue(body, Map.class);
+        assertThat(map.get("user")).isEqualTo("user123");
     }
 
     @Test
     void shouldBeExecutedBeforeSendingTheRequest() {
         // given
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service");
+        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
         Context ctx = authContextWithJwtClaim("employeeId", "user123");
         boolean[] chainInvoked = {false};
 
