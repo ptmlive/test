@@ -59,6 +59,7 @@ class AddUserAsBodyFieldFilterTest {
             .async()
             .id(serviceId)
             .uri("http://" + serviceId)
+            .predicate(ex -> true)
             .build();
         exchange.getAttributes().put(
             ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR,
@@ -139,15 +140,21 @@ class AddUserAsBodyFieldFilterTest {
     @Test
     void shouldAddUserAsBodyField() {
         // given
-        ServerWebExchange exchange = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
+        ServerWebExchange original = buildExchange("{\"foo\":\"bar\"}", "my-service", HttpMethod.POST);
         Context ctx = authContextWithJwtClaim("employeeId", "user123");
+        final ServerWebExchange[] captured = new ServerWebExchange[1];
+        GatewayFilterChain capturingChain = e -> {
+            captured[0] = e;
+            return Mono.empty();
+        };
 
         // when
-        Mono<Void> result = filter.filter(exchange, e -> Mono.empty()).contextWrite(ctx);
+        Mono<Void> result = filter.filter(original, capturingChain).contextWrite(ctx);
 
         // then
         StepVerifier.create(result).verifyComplete();
-        String body = readRequestBody(exchange);
+        ServerWebExchange mutated = captured[0];
+        String body = readRequestBody(mutated);
         JsonNode json = objectMapper.readTree(body);
         assertThat(json.get("user").asText()).isEqualTo("user123");
         assertThat(json.get("foo").asText()).isEqualTo("bar");
