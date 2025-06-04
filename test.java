@@ -40,7 +40,7 @@ public class AddUserAsBodyFieldFilter implements GlobalFilter {
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
 
-        if (isNotPost(request)) {
+        if (!HttpMethod.POST.equals(request.getMethod())) {
             log.debug("skipping enrichment: not a POST request");
             return chain.filter(exchange);
         }
@@ -58,7 +58,7 @@ public class AddUserAsBodyFieldFilter implements GlobalFilter {
 
         return extractUserId()
             .flatMap(userId -> {
-                if (StringUtils.isEmpty(userId)) {
+                if (!StringUtils.hasText(userId)) {
                     log.debug("skipping enrichment: empty employeeId claim");
                     return chain.filter(exchange);
                 }
@@ -68,10 +68,6 @@ public class AddUserAsBodyFieldFilter implements GlobalFilter {
                 log.debug("skipping enrichment: no authenticated user or missing employeeId");
                 return chain.filter(exchange);
             }));
-    }
-
-    private boolean isNotPost(ServerHttpRequest request) {
-        return !HttpMethod.POST.equals(request.getMethod());
     }
 
     private String extractServiceId(ServerWebExchange exchange) {
@@ -116,7 +112,7 @@ public class AddUserAsBodyFieldFilter implements GlobalFilter {
                     return forwardOriginalBody(exchange, chain, request, bytes);
                 }
 
-                ServerHttpRequest mutatedReq = buildMutatedRequest(request, newBytes);
+                ServerHttpRequest mutatedReq = buildMutatedRequest(exchange, request, newBytes);
                 log.info("enriched request body with user='{}' for service '{}'", userId, serviceId);
                 return chain.filter(exchange.mutate().request(mutatedReq).build());
             })
@@ -156,9 +152,9 @@ public class AddUserAsBodyFieldFilter implements GlobalFilter {
         return chain.filter(exchange.mutate().request(restoreReq).build());
     }
 
-    private ServerHttpRequest buildMutatedRequest(ServerHttpRequest request, byte[] newBytes) {
+    private ServerHttpRequest buildMutatedRequest(ServerWebExchange exchange, ServerHttpRequest request, byte[] newBytes) {
         Flux<DataBuffer> newBodyFlux = Flux.just(
-            request.exchange().getResponse().bufferFactory().wrap(newBytes)
+            exchange.getResponse().bufferFactory().wrap(newBytes)
         );
         return new ServerHttpRequestDecorator(request) {
             @Override
