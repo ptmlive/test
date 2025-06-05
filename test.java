@@ -1,17 +1,7 @@
-    CorsConfiguration config = new CorsConfiguration();
-
-    config.setAllowCredentials(true);
-    config.addAllowedOrigin("*");
-    config.setAllowedHeaders(Arrays.asList(
-        "Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With"
-    ));
-    config.setAllowedMethods(Arrays.asList(
-        "POST", "GET", "OPTIONS", "DELETE", "PUT", "PATCH"
-    ));
-    config.setExposedHeaders(Arrays.asList("*"));
-    config.setMaxAge(3600L); // czas w sekundach
-
-    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-    source.registerCorsConfiguration("/**", config);
-
-    return new CorsWebFilter(source);
+            logger.debug("CORS Configuration:");
+            logger.debug("AllowCredentials: {}", config.getAllowCredentials());
+            logger.debug("AllowedOrigins: {}", config.getAllowedOrigins());
+            logger.debug("AllowedHeaders: {}", config.getAllowedHeaders());
+            logger.debug("AllowedMethods: {}", config.getAllowedMethods());
+            logger.debug("ExposedHeaders: {}", config.getExposedHeaders());
+            logger.debug("MaxAge: {}", config.getMaxAge());
