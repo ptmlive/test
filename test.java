@@ -1,48 +1,25 @@
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
-import org.springframework.web.filter.reactive.CorsWebFilter;
-import java.util.Arrays;
-
-@Slf4j
-@Configuration
-public class CorsConfig {
-
-    @Bean
-    public CorsWebFilter corsWebFilter() {
-        CorsConfiguration config = new CorsConfiguration();
-        config.setAllowCredentials(true);
-        config.setAllowedOriginPatterns(Arrays.asList("*"));
-        config.setAllowedHeaders(Arrays.asList(
-            "Origin", 
-            "Content-Type", 
-            "Accept", 
-            "Authorization", 
-            "X-Requested-With"
-        ));
-        config.setAllowedMethods(Arrays.asList(
-            "POST", 
-            "GET", 
-            "OPTIONS", 
-            "DELETE", 
-            "PUT", 
-            "PATCH"
-        ));
-        config.setExposedHeaders(Arrays.asList("*"));
-        config.setMaxAge(3600L);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
-
-        log.debug("CORS: allowCredentials={}, origins={}, headers={}, methods={}",
-            config.getAllowCredentials(),
-            config.getAllowedOriginPatterns(),
-            config.getAllowedHeaders(),
-            config.getAllowedMethods()
-        );
-
-        return new CorsWebFilter(source);
-    }
-}
+spring:
+  cloud:
+    gateway:
+      globalcors:
+        corsConfigurations:
+          '[/**]':
+            allowCredentials: true
+            allowedOriginPatterns:
+              - "*"
+            allowedHeaders:
+              - Origin
+              - Content-Type
+              - Accept
+              - Authorization
+              - X-Requested-With
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+            exposedHeaders:
+              - "*"
+            maxAge: 3600
